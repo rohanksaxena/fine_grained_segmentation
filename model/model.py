@@ -3,7 +3,7 @@ import torch.nn as nn
 from lib.ssn.ssn import ssn_iter, sparse_ssn_iter
 
 
-class SSNModel(nn.module):
+class SSNModel(nn.Module):
     def __init__(self, n_spix, training, n_iter=10):
         super().__init__()
         self.n_spix = n_spix
