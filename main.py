@@ -9,9 +9,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 from torchvision import transforms as T
 from torchvision.models import resnet18, ResNet18_Weights
+from torch.utils.data import DataLoader
 from PIL import Image
-# from model.model import SSNModel
+from model.model import SSNModel
 import cv2
+from lib.dataset import bsds, augmentation
 
 
 def predict(model, device):
@@ -29,22 +31,8 @@ def predict(model, device):
     img = val_transform(img).unsqueeze(0)
     img = img.to(device)
     print(f'Image shape: {img.shape}')
-    pred = custom_forward(model, img)
-    # print(f'Prediction shape: {pred.shape}')
-    # # pred = torch.reshape(pred, (64, 56, 56))
-    # img = pred.squeeze(0).cpu().numpy()
-    # maps = img.reshape((img.shape[0]), -1).T
-    # print(f'Map shape: {maps.shape}')
-    # criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
-    # K = 5
-    # attempts = 10
-    # ret, label, center = cv2.kmeans(maps, K, None, criteria, attempts, cv2.KMEANS_PP_CENTERS)
-    # result_image = label.reshape((img.shape[1], img.shape[2]))
-    # print(f'Map shape: {result_image.shape}')
-    # plt.imshow(result_image)
-    # plt.axis('off')
-    # plt.savefig(f'clustered.jpg')
-    return pred
+    features = custom_forward(model, img)
+    return features
 
 
 def custom_forward(model, x):
@@ -80,12 +68,20 @@ if __name__ == '__main__':
     with torch.no_grad():
         model.eval()
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        print(model)
         print(f'Device: {device}')
         extracted_features = predict(model, device)
     print(f'Feature Extraction complete, feature shape: {extracted_features.shape}')
 
-    # # Train SSN
-    # model = SSNModel(n_spix=100, training=True)
-    # print(model.parameters())
-    # optimizer = optim.Adam(model.parameters(), lr=1e-4)
+    # Load Data
+    optimizer = optim.Adam(model.parameters(), lr=1e-4)
+    augment = augmentation.Compose(
+        [augmentation.RandomHorizontalFlip(), augmentation.RandomScale(), augmentation.RandomCrop()])
+    train_dataset = bsds.BSDS('/mnt/nfs-students/fine_grained_segmentation/BSDS500/BSDS500', geo_transforms=augment)
+    train_loader = DataLoader(train_dataset, 6, shuffle=True, drop_last=True, num_workers=4)
+
+    test_dataset = bsds.BSDS('/mnt/nfs-students/fine_grained_segmentation/BSDS500/BSDS500', split="val")
+    test_loader = DataLoader(test_dataset, 1, shuffle=False, drop_last=False)
+
+    # Train model
+    model = SSNModel(n_spix=100, training=True)
+    print(model.parameters())
