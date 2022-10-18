@@ -76,10 +76,10 @@ if __name__ == '__main__':
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
     augment = augmentation.Compose(
         [augmentation.RandomHorizontalFlip(), augmentation.RandomScale(), augmentation.RandomCrop()])
-    train_dataset = bsds.BSDS('/mnt/nfs-students/fine_grained_segmentation/BSDS500/BSDS500', geo_transforms=augment)
+    train_dataset = bsds.BSDS('/mnt/nfs-students/fine_grained_segmentation/data/BSDS500', geo_transforms=augment)
     train_loader = DataLoader(train_dataset, 6, shuffle=True, drop_last=True, num_workers=4)
 
-    test_dataset = bsds.BSDS('/mnt/nfs-students/fine_grained_segmentation/BSDS500/BSDS500', split="val")
+    test_dataset = bsds.BSDS('/mnt/nfs-students/fine_grained_segmentation/data/BSDS500', split="val")
     test_loader = DataLoader(test_dataset, 1, shuffle=False, drop_last=False)
 
     # Train model
