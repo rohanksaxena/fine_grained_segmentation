@@ -38,7 +38,8 @@ class BSDS:
         t = np.random.randint(0, len(gt['groundTruth'][0]))
         gt = gt['groundTruth'][0][t][0][0][0]
 
-        img = rgb2lab(plt.imread(os.path.join(self.img_dir, idx+".jpg")))
+        img = plt.imread(os.path.join(self.img_dir, idx+".jpg"))
+        # img = rgb2lab(plt.imread(os.path.join(self.img_dir, idx+".jpg")))
 
         gt = gt.astype(np.int64)
         img = img.astype(np.float32)
@@ -53,7 +54,7 @@ class BSDS:
         gt = torch.from_numpy(gt)
         img = torch.from_numpy(img)
         img = img.permute(2, 0, 1)
-
+        # print(f'Inside get_item: img:{img.shape}, gt:{gt.shape}')
         return img, gt.reshape(50, -1).float()
 
 

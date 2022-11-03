@@ -23,10 +23,11 @@ import argparse
 from lib.dataset import bsds, augmentation
 from lib.utils.meter import Meter
 from lib.utils.loss import reconstruct_loss_with_cross_etnropy, reconstruct_loss_with_mse
-from model import SSNModel
+from model import SSNModel, SSN_VGG
 
 relu_layers = (1, 3, 6, 8, 11, 13, 15, 18, 20, 22, 25, 27, 29)
 pooling_layers = (4, 9, 16, 23, 30)
+
 
 @torch.no_grad()
 def eval(model, loader, color_scale, pos_scale, device):
@@ -58,12 +59,12 @@ def eval(model, loader, color_scale, pos_scale, device):
         height, width = inputs.shape[-2:]
 
         nspix_per_axis = int(math.sqrt(model.nspix))
-        pos_scale = pos_scale * max(nspix_per_axis/height, nspix_per_axis/width)
+        pos_scale = pos_scale * max(nspix_per_axis / height, nspix_per_axis / width)
 
         coords = torch.stack(torch.meshgrid(torch.arange(height, device=device), torch.arange(width, device=device)), 0)
         coords = coords[None].repeat(inputs.shape[0], 1, 1, 1).float()
 
-        inputs = torch.cat([color_scale*inputs, pos_scale*coords], 1)
+        inputs = torch.cat([color_scale * inputs, pos_scale * coords], 1)
 
         Q, H, feat = model(inputs)
 
@@ -75,6 +76,7 @@ def eval(model, loader, color_scale, pos_scale, device):
     model.train()
     return sum_asa / len(loader)
 
+
 def custom_forward(model, x):
     num_children_modules = len(list(model.features.children()))
     output = {}
@@ -84,6 +86,7 @@ def custom_forward(model, x):
             output[f'layer_{i}'] = x
     return output
 
+
 def update_params(data, model, optimizer, compactness, color_scale, pos_scale, device):
     inputs, labels = data
 
@@ -91,14 +94,13 @@ def update_params(data, model, optimizer, compactness, color_scale, pos_scale, d
     labels = labels.to(device)
 
     height, width = inputs.shape[-2:]
-    print(f"height: {height}")
 
     nspix_per_axis = int(math.sqrt(model.nspix))
-    pos_scale = pos_scale * max(nspix_per_axis/height, nspix_per_axis/width)
+    pos_scale = pos_scale * max(nspix_per_axis / height, nspix_per_axis / width)
     coords = torch.stack(torch.meshgrid(torch.arange(height, device=device), torch.arange(width, device=device)), 0)
     coords = coords[None].repeat(inputs.shape[0], 1, 1, 1).float()
 
-    inputs = torch.cat([color_scale * inputs, pos_scale * coords], 1)
+    # inputs = torch.cat([color_scale * inputs, pos_scale * coords], 1)
 
     Q, H, feat = model(inputs)
 
@@ -113,6 +115,7 @@ def update_params(data, model, optimizer, compactness, color_scale, pos_scale, d
 
     return {"loss": loss.item(), "reconstruction": recons_loss.item(), "compact": compact_loss.item()}
 
+
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
@@ -123,11 +126,12 @@ if __name__ == '__main__':
     parser.add_argument("--compactness", default=1e-5, type=float)
     parser.add_argument("--color_scale", default=0.26, type=float)
     parser.add_argument("--pos_scale", default=2.5, type=float)
-    parser.add_argument("--test_interval", default=10000, type=int)
+    parser.add_argument("--test_interval", default=1000, type=int)
     parser.add_argument("--out_dir", default='./checkpoints', type=str)
     parser.add_argument("--f_dim", default=20, type=int, help="Embedding dimension")
     parser.add_argument("--n_spix", default=100, type=int, help='Number of superpixels')
     parser.add_argument("--n_iter", default=5, type=int, help='Number of iterations of differentiable SLIC')
+    parser.add_argument("--layer_number", default=3, type=int, help='Number of layers of VGG backbone')
 
     args = parser.parse_args()
 
@@ -137,7 +141,8 @@ if __name__ == '__main__':
 
     # Load data
     # train_transforms = T.Compose([T.RandomHorizontalFlip(0.5), T.RandomCrop((200, 200))])
-    train_transforms = augmentation.Compose([augmentation.RandomHorizontalFlip(), augmentation.RandomScale(), augmentation.RandomCrop()])
+    train_transforms = augmentation.Compose(
+        [augmentation.RandomHorizontalFlip(), augmentation.RandomScale(), augmentation.RandomCrop()])
     train_dataset = bsds.BSDS(args.root, geo_transforms=train_transforms)
     train_loader = DataLoader(train_dataset, args.batchsize, shuffle=True)
 
@@ -148,7 +153,8 @@ if __name__ == '__main__':
     print(f'Number of testing samples: {len(test_loader)}')
 
     # Initialize Model
-    model = SSNModel(args.f_dim, args.n_spix, args.n_iter).to(device)
+    # model = SSNModel(args.f_dim, args.n_spix, args.n_iter).to(device)
+    model = SSN_VGG(args.layer_number, args.n_spix, args.n_iter).to(device)
     print(f'Model: {model}')
 
     # Set Optimizer
@@ -157,7 +163,6 @@ if __name__ == '__main__':
     meter = Meter()
     iterations = 0
     max_val_asa = 0
-
 
     # Train model
     while iterations < args.train_iter:
@@ -172,15 +177,12 @@ if __name__ == '__main__':
                 print(f'Validation ASA: {asa}')
                 if asa > max_val_asa:
                     max_val_asa = asa
-                    torch.save(model.state_dict(), os.path.join(args.out_dir, 'best_model.pth'))
+                    torch.save(model.state_dict(),
+                               os.path.join(args.out_dir, 'best_model_' + args.layer_number + '.pth'))
             if iterations == args.train_iter:
                 break
         unique_id = str(int(time.time()))
         torch.save(model.state_dict(), os.path.join(args.out_dir, 'model_' + unique_id + '.pth'))
-
-
-
-
 
     # model = vgg16(weights=VGG16_Weights.IMAGENET1K_V1)
     # model.to(device)

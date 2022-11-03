@@ -46,7 +46,7 @@ def inference(image, nspix, n_iter, fdim=None, color_scale=0.26, pos_scale=2.5, 
     height, width = image.shape[:2]
 
     nspix_per_axis = int(math.sqrt(nspix))
-    pos_scale = pos_scale * max(nspix_per_axis/height, nspix_per_axis/width)
+    pos_scale = pos_scale * max(nspix_per_axis / height, nspix_per_axis / width)
 
     coords = torch.stack(torch.meshgrid(torch.arange(height, device="cuda"), torch.arange(width, device="cuda")), 0)
     coords = coords[None].float()
@@ -54,7 +54,7 @@ def inference(image, nspix, n_iter, fdim=None, color_scale=0.26, pos_scale=2.5, 
     image = rgb2lab(image)
     image = torch.from_numpy(image).permute(2, 0, 1)[None].to("cuda").float()
 
-    inputs = torch.cat([color_scale*image, pos_scale*coords], 1)
+    inputs = torch.cat([color_scale * image, pos_scale * coords], 1)
 
     _, H, _ = model(inputs)
 
@@ -75,6 +75,7 @@ if __name__ == "__main__":
     import argparse
     import matplotlib.pyplot as plt
     from skimage.segmentation import mark_boundaries
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", type=str, help="/path/to/image")
     parser.add_argument("--weight", default=None, type=str, help="/path/to/pretrained_weight")
