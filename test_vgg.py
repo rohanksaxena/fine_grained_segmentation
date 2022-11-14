@@ -66,7 +66,12 @@ def eval(model, loader, color_scale, pos_scale, device):
 
         inputs = torch.cat([color_scale * inputs, pos_scale * coords], 1)
 
-        Q, H, feat = model(inputs)
+        Q, H, superpixel_features, extracted_features = model(inputs)
+
+        print('Q: ', Q.shape)
+        print('H: ', H.shape)
+        print('superpixel features: ', superpixel_features.shape)
+        print('extracted features: ', extracted_features.shape)
 
         H = H.reshape(height, width)
         labels = labels.argmax(1).reshape(height, width)
@@ -100,9 +105,9 @@ def update_params(data, model, optimizer, compactness, color_scale, pos_scale, d
     coords = torch.stack(torch.meshgrid(torch.arange(height, device=device), torch.arange(width, device=device)), 0)
     coords = coords[None].repeat(inputs.shape[0], 1, 1, 1).float()
 
-    # inputs = torch.cat([color_scale * inputs, pos_scale * coords], 1)
+    inputs = torch.cat([color_scale * inputs, pos_scale * coords], 1)
 
-    Q, H, feat = model(inputs)
+    Q, H, superpixel_features, extracted_features = model(inputs)
 
     recons_loss = reconstruct_loss_with_cross_etnropy(Q, labels)
     compact_loss = reconstruct_loss_with_mse(Q, coords.reshape(*coords.shape[:2], -1), H)
@@ -121,7 +126,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=str, help="Path to dataset")
     parser.add_argument("--batchsize", default=8, type=int, help="Batch size")
-    parser.add_argument("--train_iter", default=15000, type=int)
+    parser.add_argument("--train_iter", default=50000, type=int)
     parser.add_argument("--lr", default=1e-4, type=float, help="Learning rate for optimizer")
     parser.add_argument("--compactness", default=1e-5, type=float)
     parser.add_argument("--color_scale", default=0.26, type=float)
@@ -153,8 +158,8 @@ if __name__ == '__main__':
     print(f'Number of testing samples: {len(test_loader)}')
 
     # Initialize Model
-    # model = SSNModel(args.f_dim, args.n_spix, args.n_iter).to(device)
-    model = SSN_VGG(args.layer_number, args.n_spix, args.n_iter).to(device)
+    model = SSNModel(args.f_dim, args.n_spix, args.n_iter).to(device)
+    # model = SSN_VGG(args.layer_number, args.n_spix, args.n_iter).to(device)
     print(f'Model: {model}')
 
     # Set Optimizer
@@ -178,7 +183,7 @@ if __name__ == '__main__':
                 if asa > max_val_asa:
                     max_val_asa = asa
                     torch.save(model.state_dict(),
-                               os.path.join(args.out_dir, 'best_model_' + args.layer_number + '.pth'))
+                               os.path.join(args.out_dir, 'best_model_.pth'))
             if iterations == args.train_iter:
                 break
         unique_id = str(int(time.time()))

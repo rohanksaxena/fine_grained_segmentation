@@ -49,27 +49,20 @@ class SSNModel(nn.Module):
         pixel_f = self.feature_extract(x)
 
         if self.training:
-            return ssn_iter(pixel_f, self.nspix, self.n_iter)
+            return *ssn_iter(pixel_f, self.nspix, self.n_iter), pixel_f
         else:
-            return sparse_ssn_iter(pixel_f, self.nspix, self.n_iter)
+            return *sparse_ssn_iter(pixel_f, self.nspix, self.n_iter), pixel_f
 
     def feature_extract(self, x):
         s1 = self.scale1(x)
         s2 = self.scale2(s1)
         s3 = self.scale3(s2)
 
-        print(f'x: {x.shape}')
-        print(f's1: {s1.shape}')
-        print(f's2: {s2.shape}')
-        print(f's3: {s3.shape}')
-
         s2 = nn.functional.interpolate(s2, size=s1.shape[-2:], mode="bilinear", align_corners=False)
         s3 = nn.functional.interpolate(s3, size=s1.shape[-2:], mode="bilinear", align_corners=False)
 
         cat_feat = torch.cat([x, s1, s2, s3], 1)
-        print(f'cat_feat: {cat_feat.shape}')
         feat = self.output_conv(cat_feat)
-        print(f'feat: {feat.shape}')
 
         return torch.cat([feat, x], 1)
 

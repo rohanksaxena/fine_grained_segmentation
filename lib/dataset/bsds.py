@@ -39,7 +39,7 @@ class BSDS:
         gt = gt['groundTruth'][0][t][0][0][0]
 
         img = plt.imread(os.path.join(self.img_dir, idx+".jpg"))
-        # img = rgb2lab(plt.imread(os.path.join(self.img_dir, idx+".jpg")))
+        img = rgb2lab(plt.imread(os.path.join(self.img_dir, idx+".jpg")))
 
         gt = gt.astype(np.int64)
         img = img.astype(np.float32)

@@ -1,7 +1,7 @@
 import math
 import numpy as np
 import torch
-
+import matplotlib.pyplot as plt
 from skimage.color import rgb2lab
 from skimage.segmentation._slic import _enforce_label_connectivity_cython
 
@@ -36,8 +36,9 @@ def inference(image, nspix, n_iter, fdim=None, color_scale=0.26, pos_scale=2.5, 
             An array of shape (h, w)
     """
     if weight is not None:
-        from model import SSNModel
+        from model import SSNModel, SSN_VGG
         model = SSNModel(fdim, nspix, n_iter).to("cuda")
+        # model = SSN_VGG(args.layer_number, args.nspix, args.niter).to('cuda')
         model.load_state_dict(torch.load(weight))
         model.eval()
     else:
@@ -56,7 +57,11 @@ def inference(image, nspix, n_iter, fdim=None, color_scale=0.26, pos_scale=2.5, 
 
     inputs = torch.cat([color_scale * image, pos_scale * coords], 1)
 
-    _, H, _ = model(inputs)
+    Q, H, feat, pixel_f = model(inputs)
+    print(f'Q: {Q.shape}')
+    print(f'H: {H.shape}')
+    print(f'Feat: {feat.shape}')
+    print(f'pixel_f: {pixel_f.shape}')
 
     labels = H.reshape(height, width).to("cpu").detach().numpy()
 
@@ -67,7 +72,7 @@ def inference(image, nspix, n_iter, fdim=None, color_scale=0.26, pos_scale=2.5, 
         labels = _enforce_label_connectivity_cython(
             labels[None], min_size, max_size)[0]
 
-    return labels
+    return labels, pixel_f
 
 
 if __name__ == "__main__":
@@ -84,11 +89,25 @@ if __name__ == "__main__":
     parser.add_argument("--nspix", default=100, type=int, help="number of superpixels")
     parser.add_argument("--color_scale", default=0.26, type=float)
     parser.add_argument("--pos_scale", default=2.5, type=float)
+    parser.add_argument("--layer_number", default=3, type=int)
     args = parser.parse_args()
 
     image = plt.imread(args.image)
 
     s = time.time()
-    label = inference(image, args.nspix, args.niter, args.fdim, args.color_scale, args.pos_scale, args.weight)
+    label, pixel_f = inference(image, args.nspix, args.niter, args.fdim, args.color_scale, args.pos_scale, args.weight)
+
+    # Visualize pixel features
+    pixel_f = pixel_f.squeeze(0)
+    pixel_f = pixel_f.cpu().numpy()
+    fig = plt.figure(figsize=(5, 4))
+    for i, map in enumerate(pixel_f):
+        fig.add_subplot(5, 4, i+1)
+        plt.imsave(f'pixel_f_{i+1}.jpg', map)
+
+    # model_name = args.weight.split('/')[-1]
+    model_name = args.weight
     print(f"time {time.time() - s}sec")
-    plt.imsave("basessn_results.png", mark_boundaries(image, label))
+    plt.imsave(f"{args.image}_oversegmented.png", mark_boundaries(image, label))
+
+
