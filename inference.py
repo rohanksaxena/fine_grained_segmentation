@@ -90,24 +90,36 @@ if __name__ == "__main__":
     parser.add_argument("--color_scale", default=0.26, type=float)
     parser.add_argument("--pos_scale", default=2.5, type=float)
     parser.add_argument("--layer_number", default=3, type=int)
+    enforce_connectivity = True
     args = parser.parse_args()
 
     image = plt.imread(args.image)
+    height, width = image.shape[:2]
 
     s = time.time()
-    label, pixel_f = inference(image, args.nspix, args.niter, args.fdim, args.color_scale, args.pos_scale, args.weight)
+    _, pixel_f = inference(image, args.nspix, args.niter, args.fdim, args.color_scale, args.pos_scale, args.weight)
 
     # Visualize pixel features
-    pixel_f = pixel_f.squeeze(0)
-    pixel_f = pixel_f.cpu().numpy()
-    fig = plt.figure(figsize=(5, 4))
-    for i, map in enumerate(pixel_f):
-        fig.add_subplot(5, 4, i+1)
-        plt.imsave(f'pixel_f_{i+1}.jpg', map)
+    # extracted_features = pixel_f.squeeze(0)
+    # extracted_features = extracted_features.cpu().numpy()
+    # fig = plt.figure(figsize=(5, 4))
+    # for i, map in enumerate(pixel_f):
+    #     fig.add_subplot(5, 4, i+1)
+    #     plt.imsave(f'pixel_f_{i+1}.jpg', map)
 
-    # model_name = args.weight.split('/')[-1]
+
+    # Compute superpixels from extracted features
+    Q, H, feat = sparse_ssn_iter(pixel_f, args.nspix, args.niter)
+    labels = H.reshape(height, width).to("cpu").detach().numpy()
+    if enforce_connectivity:
+        segment_size = height * width / args.nspix
+        min_size = int(0.06 * segment_size)
+        max_size = int(3.0 * segment_size)
+        labels = _enforce_label_connectivity_cython(
+            labels[None], min_size, max_size)[0]
+
     model_name = args.weight
     print(f"time {time.time() - s}sec")
-    plt.imsave(f"{args.image}_oversegmented.png", mark_boundaries(image, label))
+    plt.imsave(f"{args.image.split('.')[0]}_oversegmented_decoupled.png", mark_boundaries(image, labels))
 
 
