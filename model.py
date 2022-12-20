@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 
-from torchvision.models import vgg16, VGG16_Weights
 from lib.ssn.ssn import ssn_iter, sparse_ssn_iter
 
 
@@ -73,7 +72,7 @@ class SSN_VGG(nn.Module):
         self.nspix = nspix
         self.n_iter = n_iter
         self.layer_number = layer_number
-        self.features = vgg16(weights=VGG16_Weights.IMAGENET1K_V1).features
+        self.features = vgg16(weights=None).features
         self.relu_layer_indices = (1, 3, 6, 8, 11, 13, 15, 18, 20, 22, 25, 27, 29)
         self.pooling_layer_indices = (4, 9, 16, 23, 30)
 
