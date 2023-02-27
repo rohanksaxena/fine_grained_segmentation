@@ -116,7 +116,7 @@ def sparse_ssn_iter(pixel_features, num_spixels, n_iter):
     # print('permuted pixel features: ', permuted_pixel_features.shape)
 
     for _ in range(n_iter):
-        print(f'Iteration {_}')
+        # print(f'Iteration {_}')
         dist_matrix = PairwiseDistFunction.apply(
             pixel_features, spixel_features, init_label_map, num_spixels_width, num_spixels_height)
         # print(f'distance matrix: {dist_matrix.shape}, values: {torch.unique(dist_matrix)}')
@@ -189,4 +189,4 @@ def ssn_iter(pixel_features, num_spixels, n_iter):
 
     hard_labels = get_hard_abs_labels(affinity_matrix, init_label_map, num_spixels_width)
 
-    return abs_affinity, hard_labels, spixel_features
+    return abs_affinity, hard_labels, spixel_features, num_spixels_width

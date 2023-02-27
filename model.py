@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from torch_geometric.nn import MessagePassing
 
 from lib.ssn.ssn import ssn_iter, sparse_ssn_iter
 
@@ -13,10 +14,11 @@ def conv_bn_relu(in_c, out_c):
 
 
 class SSNModel(nn.Module):
-    def __init__(self, feature_dim, nspix, n_iter=10):
+    def __init__(self, feature_dim, nspix, training, n_iter=10):
         super().__init__()
         self.nspix = nspix
         self.n_iter = n_iter
+        self.training = training
 
         self.scale1 = nn.Sequential(
             conv_bn_relu(5, 64),
@@ -48,9 +50,11 @@ class SSNModel(nn.Module):
         pixel_f = self.feature_extract(x)
 
         if self.training:
-            return *ssn_iter(pixel_f, self.nspix, self.n_iter), pixel_f
+            # return *ssn_iter(pixel_f, self.nspix, self.n_iter), pixel_f
+            return ssn_iter(pixel_f, self.nspix, self.n_iter)
         else:
-            return *sparse_ssn_iter(pixel_f, self.nspix, self.n_iter), pixel_f
+            # return *sparse_ssn_iter(pixel_f, self.nspix, self.n_iter), pixel_f
+            return sparse_ssn_iter(pixel_f, self.nspix, self.n_iter)
 
     def feature_extract(self, x):
         s1 = self.scale1(x)
@@ -91,9 +95,25 @@ class SSN_VGG(nn.Module):
             output[key] = nn.functional.interpolate(value, size=input.shape[-2:], mode='bilinear', align_corners=False)
 
         pixel_f = torch.cat([*output.values(), input], 1)
-        # pixel_f = self.features(x)
+        pixel_f = self.features(x)
 
         if self.training:
             return ssn_iter(pixel_f, self.nspix, self.n_iter)
         else:
             return sparse_ssn_iter(pixel_f, self.nspix, self.n_iter)
+
+
+class MLP(MessagePassing):
+    def __init__(self, aggr='mean'):
+        super().__init__(aggr)
+        self.mlp = torch.nn.Sequential(torch.nn.Linear(40, 1), torch.nn.Sigmoid())
+
+    def forward(self, x, edge_index):
+        return self.propagate(edge_index, x=x), self.probs
+
+    def message(self, x_i, x_j):
+        concatenated = torch.cat([x_i, x_j], dim=1)
+        y = self.mlp(concatenated)
+        self.probs = y
+        # return y*x_j
+        return y

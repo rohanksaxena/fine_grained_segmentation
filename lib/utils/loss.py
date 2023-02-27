@@ -42,10 +42,12 @@ def reconstruction(assignment, labels, hard_assignment=None):
         hard_assignment: torch.Tensor
             A Tensor of shape (B, n_pixels)
     """
+    # print('In reconstruction***')
     labels = labels.permute(0, 2, 1).contiguous()
-
+    # print(f'labels: {labels.shape}')
     # matrix product between (n_spixels, n_pixels) and (n_pixels, channels)
     spixel_mean = torch.bmm(assignment, labels) / (assignment.sum(2, keepdim=True) + 1e-16)
+    # print(f'spixel mean: {spixel_mean.shape}, vals: {torch.unique(spixel_mean)}')
     if hard_assignment is None:
         # (B, n_spixels, n_pixels) -> (B, n_pixels, n_spixels)
         permuted_assignment = assignment.permute(0, 2, 1).contiguous()
@@ -54,6 +56,7 @@ def reconstruction(assignment, labels, hard_assignment=None):
     else:
         # index sampling
         reconstructed_labels = torch.stack([sm[ha, :] for sm, ha in zip(spixel_mean, hard_assignment)], 0)
+    # print(f'Reconstructed labels: {reconstructed_labels.shape}')
     return reconstructed_labels.permute(0, 2, 1).contiguous()
 
 
@@ -69,9 +72,16 @@ def reconstruct_loss_with_cross_etnropy(assignment, labels, hard_assignment=None
         hard_assignment: torch.Tensor
             A Tensor of shape (B, n_pixels)
     """
+    # print('In reconstruction loss with cross entropy********')
+    # print(f'assignment: {assignment.shape}')
+    # print(f'labels: {labels.shape}')
     reconstracted_labels = reconstruction(assignment, labels, hard_assignment)
+    # print(f'reconstructed labels: {reconstracted_labels.shape}')
+    # print(f'values: min: {torch.min(reconstracted_labels)}, max: {torch.max(reconstracted_labels)}, unique: {torch.unique(reconstracted_labels)}')
     reconstracted_labels = reconstracted_labels / (1e-16 + reconstracted_labels.sum(1, keepdim=True))
+    # print(f'normalized values: min: {torch.min(reconstracted_labels)}, max: {torch.max(reconstracted_labels)}, unique: {torch.unique(reconstracted_labels)}')
     mask = labels > 0
+    # print(f'masked shape: {reconstracted_labels[mask].shape}, vals: {torch.unique(reconstracted_labels[mask])}')
     return -(reconstracted_labels[mask] + 1e-16).log().mean()
 
 
@@ -87,5 +97,6 @@ def reconstruct_loss_with_mse(assignment, labels, hard_assignment=None):
         hard_assignment: torch.Tensor
             A Tensor of shape (B, n_pixels)
     """
+    # print('In reconstruction loss with MSE')
     reconstracted_labels = reconstruction(assignment, labels, hard_assignment)
     return torch.nn.functional.mse_loss(reconstracted_labels, labels)
