@@ -6,14 +6,16 @@ from skimage.color import rgb2lab
 from skimage.segmentation._slic import _enforce_label_connectivity_cython
 from lib.ssn.ssn import sparse_ssn_iter
 from graph import Graph, Superpixel
-
+from lib.dataset import spixel_dataset
+from torch.utils.data import DataLoader
+import sys
 
 # import networkx as nx
 # from torch_geometric.data import Data
 
 
 @torch.no_grad()
-def inference(image, nspix, n_iter, fdim=None, color_scale=0.26, pos_scale=2.5, weight=None, enforce_connectivity=True):
+def inference(image, nspix, n_iter, fdim=None, color_scale=0.26, pos_scale=2.5, weight=None, mlp_weight=None, enforce_connectivity=True):
     """
     generate superpixels
 
@@ -48,6 +50,13 @@ def inference(image, nspix, n_iter, fdim=None, color_scale=0.26, pos_scale=2.5, 
     else:
         model = lambda data: sparse_ssn_iter(data, nspix, n_iter)
 
+    # Load MLP
+    from model import MLP
+    if mlp_weight is not None:
+        mlp_model = MLP().to("cuda")
+        mlp_model.load_state_dict(torch.load(mlp_weight))
+        mlp_model.eval()
+
     height, width = image.shape[:2]
 
     nspix_per_axis = int(math.sqrt(nspix))
@@ -63,18 +72,115 @@ def inference(image, nspix, n_iter, fdim=None, color_scale=0.26, pos_scale=2.5, 
 
     inputs = torch.cat([color_scale * image, pos_scale * coords], 1)
 
-    Q, H, feat, num_spixels_width, pixel_f = model(inputs)
+    Q, H, superpixel_features, num_spixels_width = model(inputs)
 
+    # SECTION BEGIN: Get edge data from features for MLP analysis
+    # Extract superpixel data
+    superpixels_list = []
+    # reshaped_labels = H.reshape(-1, 200, 200)
+    reshaped_labels = H.reshape(-1, height, width)
+    # print(f'Labels shape: {H.shape}, reshaped labels shape: {reshaped_labels.shape}, num_spixels_width: {num_spixels_width}')
+    edge_indices = []
+    mylist = []
+    superpixels = {}
+    i = 0
+    for j in range(len(torch.unique(reshaped_labels))):
+        pixel_indices_2d = torch.argwhere(reshaped_labels[i, :, :] == j)
+        pixel_indices_1d = torch.argwhere(reshaped_labels[i, :, :].flatten() == j)
+        superpixels[j] = Superpixel(index=j, features=torch.unsqueeze(superpixel_features[i, :, j], 0),
+                                    pixel_indices_2d=pixel_indices_2d.double(),
+                                    num_spixels_width=torch.tensor(num_spixels_width),
+                                    image_width=width, num_spixels=torch.max(reshaped_labels),
+                                    pixel_indices_1d=pixel_indices_1d.double())
+    mylist.append(superpixels)
+    edges = None
+    for key in superpixels.keys():
+        superpixel = superpixels[key]
+        cds = superpixel.convert_spixel_index_to_coordinates()
+        if edges is None:
+            edges = cds
+        else:
+            edges = np.hstack([edges, cds])
+
+    if (len(edge_indices) == 0):
+        edge_indices = edges
+    else:
+        np.append(edge_indices, edges)
+
+    superpixel_features = torch.transpose(torch.squeeze(superpixel_features), 0, 1)
+
+    edge_indices = torch.tensor(edge_indices, dtype=torch.int64)
+    edge_indices = edge_indices.to("cuda")
+    # SECTION END
+
+    # USE MLP
+    updated_spixel_features, prob_vector = mlp_model(x=superpixel_features, edge_index=edge_indices)
+
+    # SECTION BEGIN
+
+    torch.set_printoptions(threshold=10_000)
+    edge_indices = torch.transpose(edge_indices, 0, 1)
+    # print(f'edge indices shape: {edge_indices.shape}')
+    # print(f'edge indices : {edge_indices}')
+    # print(f'Prob vector: {prob_vector}')
+    thresholds = [0.95, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95, 0.98, 0.99]
+    # t = 0.95
+    for t in thresholds:
+        components = {}
+        val = 0
+        for i in range(len(edge_indices)):
+            # print(f'Checking {edge_indices[i][0]} and {edge_indices[i][1]}')
+            if (prob_vector[i] > t):
+                # print(f'Combining: {edge_indices[i][0]} and {edge_indices[i][1]}')
+                if (int(edge_indices[i][0]) in components.keys()):
+                    components[int(edge_indices[i][1])] = components[int(edge_indices[i][0])]
+                elif (int(edge_indices[i][1]) in components.keys()):
+                    components[int(edge_indices[i][0])] = components[int(edge_indices[i][1])]
+                else:
+                    components[int(edge_indices[i][0])] = val
+                    components[int(edge_indices[i][1])] = val
+                    val += 1
+            else:
+                if (int(edge_indices[i][0]) not in components.keys()):
+                    components[int(edge_indices[i][0])] = val
+                    val += 1
+                if (int(edge_indices[i][1]) not in components.keys()):
+                    components[int(edge_indices[i][1])] = val
+                    val+=1
+
+            # print(f'Components: {components}')
+            H_prime = H.detach().clone()
+            for i in range(len(torch.unique(H))):
+                if i in components.keys():
+                    H_prime[H_prime == i] = components[i]
+
+        # print(f'H prime: {torch.unique(H_prime)}')
+        H_prime = torch.unsqueeze(H_prime, 0)
+
+        # Plot MLP prediction
+        image = plt.imread(args.image)
+        labels = H_prime.reshape(height, width).to("cpu").detach().numpy()
+        plt.imsave(f"result_MLP_{t}.png", mark_boundaries(image, labels))
+    
+
+
+    # SECTION END
+
+    # Plot SSN prediction
     labels = H.reshape(height, width).to("cpu").detach().numpy()
+    image = plt.imread(args.image)
+    plt.imsave("result_SSN.png", mark_boundaries(image, labels))
 
-    if enforce_connectivity:
-        segment_size = height * width / nspix
-        min_size = int(0.06 * segment_size)
-        max_size = int(3.0 * segment_size)
-        labels = _enforce_label_connectivity_cython(
-            labels[None], min_size, max_size)[0]
 
-    return labels, pixel_f
+
+    # if enforce_connectivity:
+    #     segment_size = height * width / nspix
+    #     min_size = int(0.06 * segment_size)
+    #     max_size = int(3.0 * segment_size)
+    #     labels = _enforce_label_connectivity_cython(
+    #         labels[None], min_size, max_size)[0]
+
+    return labels, Q, H
 
 
 if __name__ == "__main__":
@@ -92,6 +198,7 @@ if __name__ == "__main__":
     parser.add_argument("--color_scale", default=0.26, type=float)
     parser.add_argument("--pos_scale", default=2.5, type=float)
     parser.add_argument("--layer_number", default=3, type=int)
+    parser.add_argument("--mlp_weight", type=str, help="path to pretrained mlp")
     enforce_connectivity = True
     args = parser.parse_args()
 
@@ -99,8 +206,10 @@ if __name__ == "__main__":
     height, width = image.shape[:2]
 
     s = time.time()
-    _, pixel_f = inference(image, args.nspix, args.niter, args.fdim, args.color_scale, args.pos_scale, args.weight)
+    _, _, pixel_f = inference(image, args.nspix, args.niter, args.fdim, args.color_scale, args.pos_scale, args.weight, args.mlp_weight)
 
+    if pixel_f is not None:
+        sys.exit(0)
     # Visualize pixel features
     # extracted_features = pixel_f.squeeze(0)
     # extracted_features = extracted_features.cpu().numpy()
@@ -140,21 +249,21 @@ if __name__ == "__main__":
         pixel_indices_1d = np.argwhere(labels.flatten() == i)
         # print(f'Spixel:{i}, num_pixels: {pixel_indices_2d.shape}, pixel list: {pixel_indices_2d}')
         # print(f'Spixel:{i}, num_pixels: {pixel_indices_1d.shape}, pixel list: {pixel_indices_1d}')
-        mask = np.where(labels == i, 1, 0)
+        # mask = np.where(labels == i, 1, 0)
         # print(f'mask: {mask.shape}, unique vals: {np.unique(mask)}, nonzero: {np.count_nonzero(mask)}')
         # plt.imsave(f'mask.png', mask)
-        masked_features = np.mean(np.multiply(pixel_f, mask), axis=(1,2))
-        masked_features = torch.unsqueeze(torch.tensor(masked_features), 0)
+        # masked_features = np.mean(np.multiply(pixel_f, mask), axis=(1,2))
+        # masked_features = torch.unsqueeze(torch.tensor(masked_features), 0)
         # print(f'masked features shape: {masked_features.shape}')
         # print(f'features shape: {feat[:, :, i].shape}')
         # print(f'nonzero elements: {np.count_nonzero(masked_features)}, shape: {masked_features.shape}')
         # print(f'Masked features: {masked_features}')
-        # superpixels[i] = Superpixel(index=i, features=feat[:, :, i], pixel_indices_2d=pixel_indices_2d,
-        #                             num_spixels_width=num_spixels_width,
-        #                             image_width=width, num_spixels=np.max(labels), pixel_indices_1d=pixel_indices_1d)
-        superpixels[i] = Superpixel(index=i, features=torch.tensor(masked_features), pixel_indices_2d=pixel_indices_2d,
+        superpixels[i] = Superpixel(index=i, features=feat[:, :, i], pixel_indices_2d=pixel_indices_2d,
                                     num_spixels_width=num_spixels_width,
                                     image_width=width, num_spixels=np.max(labels), pixel_indices_1d=pixel_indices_1d)
+        # superpixels[i] = Superpixel(index=i, features=torch.tensor(masked_features), pixel_indices_2d=pixel_indices_2d,
+        #                             num_spixels_width=num_spixels_width,
+        #                             image_width=width, num_spixels=np.max(labels), pixel_indices_1d=pixel_indices_1d)
 
     print(f'No. of Superpixels: {len(superpixels)}')
     # print(f'Superpixels: {superpixels}')
@@ -162,65 +271,93 @@ if __name__ == "__main__":
     # Compute neighbor weights
     for key in superpixels.keys():
         spix = superpixels[key]
-        spix.compute_neighbor_weights(superpixels)
-        # print(
-        #     f'Spix index: {spix.index}, label = {spix.label}, features = {spix.features.shape}, centroid = {spix.centroid}, neighbors = {spix.neighbor_weights}')
+    #     spix.compute_neighbor_weights(superpixels)
+        print(
+            f'key: {key} Spix index: {spix.index}, label = {spix.label}, features = {spix.features.shape}, centroid = {spix.centroid}, neighbors = {spix.neighbor_spixels}')
+
+    # Create dataset
+    train_dataset = spixel_dataset.SpixelDataset(superpixels)
+    train_loader = DataLoader(train_dataset, batch_size=1, shuffle=False)
+    for data in train_loader:
+        x1, x2 = data
+        print(f'x1: {x1.shape}, x2: {x2.shape}')
+
+
 
     # Perform iterative grouping
-    num_iterations = 10
-    threshold = 0.98
-    for i in range(num_iterations):
-        workset = set(superpixels.keys())
-        print(f'Iteration {i}, threshold: {threshold}')
-        # print(f'Workset: {workset}')
-        merges = 0
-        while (len(workset) != 0):
-            spix_idx = workset.pop()
-            current_spix = superpixels[spix_idx]
-            print(f'Current spix: {spix_idx}, neighbors: {current_spix.neighbor_weights}')
-            nn_index_valid = -1
-            # Get nearest neighbor still in workset
-            for idx in range(len(current_spix.neighbor_spixels)):
-                # print(f'idx: {idx}')
-                nn_index, nn_weight = list(current_spix.neighbor_weights.items())[idx]
-            # if i < len(list(current_spix.neighbor_weights.items())):
-            #     nn_index, nn_weight = list(current_spix.neighbor_weights.items())[i]
-                if nn_index in workset and current_spix.label != superpixels[nn_index].label:
-                    nn_index_valid = nn_index
-                    print(f'Neighbor selected: {nn_index}')
-                    # break
-                # elif nn_index not in workset and idx == len(current_spix.neighbor_spixels):
-                #     nn_exists = False
-                # elif nn_index not in workset:
-                #     continue
-            # print(f'current spix: {spix_idx}, nn index: {nn_index_valid}, nn weight: {nn_weight}')
-                    if nn_index_valid != -1 and nn_weight > threshold:
-                        print(f'Combining {spix_idx} and {nn_index_valid}, weight: {nn_weight}')
-                        print(f'Labels: {spix_idx} - {superpixels[spix_idx].label}.................{nn_index_valid} - {superpixels[nn_index_valid].label}')
-                        workset.remove(nn_index_valid)
-                        superpixels[nn_index_valid].label = superpixels[spix_idx].label
-                        merges += 1
+    # num_iterations = 10
+    # threshold = 0.98
+    # for i in range(num_iterations):
+    #     workset = set(superpixels.keys())
+    #     # print(f'Iteration {i}, threshold: {threshold}')
+    #     # print(f'Workset: {workset}')
+    #     merges = 0
+    #     while (len(workset) != 0):
+    #         spix_idx = workset.pop()
+    #         current_spix = superpixels[spix_idx]
+    #         # print(f'Current spix: {spix_idx}, neighbors: {current_spix.neighbor_weights}')
+    #         nn_index_valid = -1
+    #         # Get nearest neighbor still in workset
+    #         for idx in range(len(current_spix.neighbor_spixels)):
+    #             # print(f'idx: {idx}')
+    #             nn_index, nn_weight = list(current_spix.neighbor_weights.items())[idx]
+    #         # if i < len(list(current_spix.neighbor_weights.items())):
+    #         #     nn_index, nn_weight = list(current_spix.neighbor_weights.items())[i]
+    #             if nn_index in workset and current_spix.label != superpixels[nn_index].label:
+    #                 nn_index_valid = nn_index
+    #                 # print(f'Neighbor selected: {nn_index}')
+    #                 # break
+    #             # elif nn_index not in workset and idx == len(current_spix.neighbor_spixels):
+    #             #     nn_exists = False
+    #             # elif nn_index not in workset:
+    #             #     continue
+    #         # print(f'current spix: {spix_idx}, nn index: {nn_index_valid}, nn weight: {nn_weight}')
+    #                 if nn_index_valid != -1 and nn_weight > threshold:
+    #                     # print(f'Combining {spix_idx} and {nn_index_valid}, weight: {nn_weight}')
+    #                     # print(f'Labels: {spix_idx} - {superpixels[spix_idx].label}.................{nn_index_valid} - {superpixels[nn_index_valid].label}')
+    #                     workset.remove(nn_index_valid)
+    #                     superpixels[nn_index_valid].label = superpixels[spix_idx].label
+    #                     merges += 1
+    #
+    #     new_labels = np.copy(labels).flatten()
+    #     for key in superpixels.keys():
+    #         spix = superpixels[key]
+    #         # print(f'Spix index: {spix.index}, label = {spix.label}, pixel indices: {spix.pixel_indices_1d}')
+    #         for spix_idx in spix.pixel_indices_1d:
+    #             new_labels[spix_idx] = spix.label
+    #
+    #     new_labels = new_labels.reshape(height, width)
+    #     # print(f'New Labels: {np.unique(new_labels)}')
+    #     # plt.imsave(f"merged/merged_{i}.png", mark_boundaries(image, new_labels))
+    #     # threshold -= 0.01
+    #     num_iterations -= 1
 
-        new_labels = np.copy(labels).flatten()
-        for key in superpixels.keys():
-            spix = superpixels[key]
-            # print(f'Spix index: {spix.index}, label = {spix.label}, pixel indices: {spix.pixel_indices_1d}')
-            for spix_idx in spix.pixel_indices_1d:
-                new_labels[spix_idx] = spix.label
+    # for key in superpixels.keys():
+    #     spix = superpixels[key]
+    #     # spix.compute_neighbor_weights(superpixels)
+        # print(
+            # f'Spix index: {spix.index}, label = {spix.label}')
 
-        new_labels = new_labels.reshape(height, width)
-        print(f'New Labels: {np.unique(new_labels)}')
-        plt.imsave(f"merged/merged_{i}.png", mark_boundaries(image, new_labels))
-        # threshold -= 0.01
-        num_iterations -= 1
-
-    for key in superpixels.keys():
-        spix = superpixels[key]
-        # spix.compute_neighbor_weights(superpixels)
-        print(
-            f'Spix index: {spix.index}, label = {spix.label}')
-
-
+    # Spectral Clustering
+    # adjaceny_matrix = np.zeros((len(superpixels), len(superpixels)))
+    # degree_matrix = np.zeros((len(superpixels), len(superpixels)))
+    # for idx, spix in superpixels.items():
+    #     print(f'Superpixel :{idx}, neighbors: {spix.neighbor_weights}')
+    #     degree_matrix[idx, idx] = len(spix.neighbor_weights)
+    #     for neighbor, weight in spix.neighbor_weights.items():
+    #         adjaceny_matrix[idx][neighbor] = weight
+    #     # print(degree_matrix[idx, :])
+    # # print(adjaceny_matrix.shape)
+    # graph_laplacian = degree_matrix - adjaceny_matrix
+    #
+    # # eigenvalues and eigenvectors
+    # vals, vecs = np.linalg.eig(graph_laplacian)
+    #
+    # # sort these based on the eigenvalues
+    # vecs = vecs[:, np.argsort(vals)]
+    # vals = vals[np.argsort(vals)]
+    #
+    # print(f'eigenvalues: {vals}')
     # new_labels = np.copy(labels).flatten()
     # for key in superpixels.keys():
     #     spix = superpixels[key]
@@ -233,42 +370,42 @@ if __name__ == "__main__":
 
     # Construct Adjacency Matrix
     # edge_indices = []
-    # weights_list = []
-    # weights = None
+    # # weights_list = []
+    # # weights = None
     # edges = None
     # for superpixel in superpixels:
-    # print(f'Spixel Neighbors of {superpixel.index}: ', superpixel.neighbor_spixels)
-    # coords = superpixel.convert_spixel_index_to_coordinates()
-    # print(f'coords received: {coords.shape},  {coords}')
-    # curr_weights = superpixel.compute_neighbor_weights(superpixels)
-    # print(f'Neighbor weights: {curr_weights}, no. of neighbors: {curr_weights.shape}')
-    # edge_indices.append(coords)
-    # print(f'Current Weights: {curr_weights}')
+    #     print(f'Spixel Neighbors of {superpixel.index}: ', superpixel.neighbor_spixels)
+    #     coords = superpixel.convert_spixel_index_to_coordinates()
+    #     print(f'coords received: {coords.shape},  {coords}')
+    # # curr_weights = superpixel.compute_neighbor_weights(superpixels)
+    # # print(f'Neighbor weights: {curr_weights}, no. of neighbors: {curr_weights.shape}')
+    #     edge_indices.append(coords)
+    # # print(f'Current Weights: {curr_weights}')
+    #     edge_indices += coords
+    #     print(f'Current Edges: {coords}')
+    #     edge_indices += coords
+    #     if edges is None:
+    #         edges = coords
+    #     else:
+    #         edges = np.hstack([edges, coords])
+    # # if weights is None:
+    # #     weights = curr_weights
+    # # else:
+    # #     weights = np.hstack([weights, curr_weights])
+    # # edge_indices.append(coords)
+    #
     # edge_indices += coords
-    # print(f'Current Edges: {coords}')
-    # edge_indices += coords
-    # if edges is None:
-    #     edges = coords
-    # else:
-    #     edges = np.hstack([edges, coords])
-    # if weights is None:
-    #     weights = curr_weights
-    # else:
-    #     weights = np.hstack([weights, curr_weights])
-    # edge_indices.append(coords)
-
-    # edge_indices += coords
-    # weights_list += curr_weights
-    # weights_list.append(weights)
+    # # weights_list += curr_weights
+    # # weights_list.append(weights)
     # edge_indices = np.asarray(edge_indices)
-    # weights_list = [*weights_list]
-
-    # print(f'Edge indices length: {len(edge_indices)}, type: {type(edge_indices)}, out: {edge_indices}')
+    # # weights_list = [*weights_list]
+    #
+    # # print(f'Edge indices length: {len(edge_indices)}, type: {type(edge_indices)}, out: {edge_indices}')
     # print(f'Edge indices length: {edge_indices.shape}, type: {type(edge_indices)}, out: {edge_indices}')
     # edges = edges.T
     # print(f'Edge indices length: {edges.shape}, type: {type(edges)}, out: {edges}')
-    # print(f'Weights length: {weights.shape}, type: {type(weights)}, out: {weights}')
-
+    # # print(f'Weights length: {weights.shape}, type: {type(weights)}, out: {weights}')
+    #
     # edges_x = edges[:, 0]
     # edges_y = edges[:, 1]
     # print(f'Edges x: {edges_x.shape}, type: {type(edges_x)}, out: {edges_x}')
@@ -334,7 +471,7 @@ if __name__ == "__main__":
     # print('superpixels with connectivity: ', len(superpixels_connectivity))
 
     # centroids = []
-    image = mark_boundaries(image, labels)
+    # image = mark_boundaries(image, labels)
 
     # for superpixel in superpixels:
     #     # print(f'Centroid: ', superpixel.centroid.shape)
