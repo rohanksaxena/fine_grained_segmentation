@@ -18,6 +18,7 @@ from PIL import Image
 from skimage.segmentation._slic import _enforce_label_connectivity_cython
 from skimage.segmentation import mark_boundaries
 import cv2
+import wandb
 import time
 import argparse
 from lib.dataset import bsds, augmentation
@@ -93,11 +94,8 @@ def custom_forward(model, x):
     return output
 
 
-def update_params(data, model, optimizer, compactness, color_scale, pos_scale, device, mlp_model, batch_size):
+def update_params(data, model, optimizer, compactness, color_scale, pos_scale, device, mlp_model, batch_size, iteration):
     inputs, labels = data
-    # print('In update')
-    # print(f'input shape: {inputs.shape}')
-    # print(f'labels shape: {labels.shape}')
     inputs = inputs.to(device)
     labels = labels.to(device)
 
@@ -111,12 +109,6 @@ def update_params(data, model, optimizer, compactness, color_scale, pos_scale, d
     inputs = torch.cat([color_scale * inputs, pos_scale * coords], 1)
 
     Q, H, superpixel_features, num_spixels_width = model(inputs)
-
-    # print(f'Q: {Q.shape}')
-    # print(f'H: {H.shape}, spixel labels: {torch.unique(H)}')
-    # print(f'superpixel_features: {superpixel_features.shape}')
-    # print(f'extracted features: {extracted_features.shape}')
-    # print(f'Q for a single pixel: {Q[0,:, 0]}')
 
     # Extract superpixel data
     superpixels_list = []
@@ -138,22 +130,11 @@ def update_params(data, model, optimizer, compactness, color_scale, pos_scale, d
         edges = None
         for key in superpixels.keys():
             superpixel = superpixels[key]
-            # print(f'Spixel Neighbors of {superpixel.index}: ', superpixel.neighbor_spixels)
             cds = superpixel.convert_spixel_index_to_coordinates()
-            # print(f'coords received: {coords.shape},  {coords}')
-            # edge_indices.append(coords)
-            # edge_indices += coords
-            # print(f'Current Edges: {coords}')
-            # edge_indices += coords
             if edges is None:
                 edges = cds
             else:
                 edges = np.hstack([edges, cds])
-
-        # edge_indices = np.asarray(edge_indices)
-        # print(f'Edge indices length: {edge_indices.shape}, type: {type(edge_indices)}, out: {edge_indices}')
-        # edges = edges.T
-        # print(f'Edge indices length: {edges.shape}, type: {type(edges)}, out: {edges}')
 
         if(len(edge_indices) == 0):
             edge_indices = edges
@@ -161,32 +142,20 @@ def update_params(data, model, optimizer, compactness, color_scale, pos_scale, d
             np.append(edge_indices, edges)
 
     superpixel_features = torch.transpose(torch.squeeze(superpixel_features), 0, 1)
-    # print(f'reshped superpixel features: {superpixel_features.shape}')
     
     edge_indices =torch.tensor(edge_indices, dtype=torch.int64)
     edge_indices = edge_indices.to(device)
 
-    # print(f'edge indices shape: {edge_indices.shape}')
-    # print(f'num of images: {len(superpixels_list)}')
-
     # Compute original losses
     # Compute original recons loss
-    # print(f"Computing original recons loss: ")
-    # print(f'passing q: {Q.shape} and labels: {labels.shape}, labels vals: {torch.unique(labels)}')
     recons_loss = reconstruct_loss_with_cross_etnropy(Q, labels)
-    # print(f"original recons loss computed. ")
-    # print("Computing compactness loss:")
-    # print(f'H type: {H.type()}, H shape: {H.shape}')
     compact_loss = reconstruct_loss_with_mse(Q, coords.reshape(*coords.shape[:2], -1), H)
-    # print("compactness loss done")
-
 
     # Setup MLP
     updated_spixel_features, prob_vector = mlp_model(x=superpixel_features, edge_index=edge_indices)
-    # print(f'Prob vector: {prob_vector.shape}, {prob_vector[0:10]}')
-    # print(f'labels: ', torch.unique(labels))
     edge_indices = torch.transpose(edge_indices, 0, 1)
-    # print(f'edge indices shape: {edge_indices.shape}')
+
+    """
     components = {}
     val = 0
     for i in range(len(edge_indices)):
@@ -215,32 +184,30 @@ def update_params(data, model, optimizer, compactness, color_scale, pos_scale, d
     for i in range(len(torch.unique(H))):
         if i in components.keys():
             H_prime[H_prime == i] = components[i]
+    """
 
+    # Compute Q_prime
+    Q_prime = torch.zeros(Q.shape[1], Q.shape[1])
+    for edge, p in zip(edge_indices, prob_vector):
+        Q_prime[edge[0]][edge[1]] = p
+    Q_prime = torch.unsqueeze(Q_prime, 0)
+    Q_prime = Q_prime.to(device)
 
-    # print(f'H shape: ', H.shape)
-    # print(f'H prime shape: ', H_prime.shape)
-    # H_prime = torch.unsqueeze(H_prime, 0)
-    # print(f'H prime shape: {H_prime.shape}, values: {torch.unique(H_prime)}')
-    # print(f'labels type: {labels.type()}')
-    # print(f'H_prime type: {H_prime.type()}')
-    # H_prime = H_prime.to(torch.long)
-    # print(f'H_prime type: {H_prime.type()}')
-    # print(f"Computing comined recons loss: ")
-    # print(f'passing q: {Q.shape} and labels: {H_prime.shape}')
-    # recons_loss_with_comb_prop = reconstruct_loss_with_cross_etnropy(Q, H_prime)
+    # print(f"Edge Indices shape: {edge_indices.shape}, prob vector shape: {prob_vector.shape}, Q shape: {Q.shape}, Q_prime shape: {Q_prime.shape}")
+    # loss = recons_loss + compactness * compact_loss + recons_loss_with_comb_prop
+    
+    Q_product = torch.einsum("ijk, ijj->ikj", Q, Q_prime)
+    Q_product = torch.einsum("ijk->ikj", Q_product)
+    Q_product = Q_product.to(device)
 
-    recons_loss_with_comb_prop = reconstruct_loss_with_mse(Q, coords.reshape(*coords.shape[:2], -1), H_prime)
-    # print(f"Combined recons loss computed ")
-    # print(f'Combination loss: {recons_loss_with_comb_prop}')
-
-
-    loss = recons_loss + compactness * compact_loss + compactness * recons_loss_with_comb_prop
+    recons_loss_with_Q_prime = reconstruct_loss_with_cross_etnropy(Q_product, labels)
+    loss = recons_loss + compactness * compact_loss + recons_loss_with_Q_prime
 
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
 
-    return {"loss": loss.item(), "reconstruction": recons_loss.item(), "compact": compact_loss.item(), "H_prime_recons": recons_loss_with_comb_prop.item()}
+    return {"loss": loss.item(), "reconstruction": recons_loss.item(), "compact": compact_loss.item(), "Q_prime_recons": recons_loss_with_Q_prime.item()}
 
 
 if __name__ == '__main__':
@@ -259,8 +226,14 @@ if __name__ == '__main__':
     parser.add_argument("--n_spix", default=100, type=int, help='Number of superpixels')
     parser.add_argument("--n_iter", default=5, type=int, help='Number of iterations of differentiable SLIC')
     parser.add_argument("--layer_number", default=3, type=int, help='Number of layers of VGG backbone')
+    parser.add_argument("--wandb_key", type=str, help="Your wandb key")
+    parser.add_argument("--wandb_entity", type=str, help="Entity name")
 
     args = parser.parse_args()
+
+    # Setup wandb
+    wandb.login(key=args.wandb_key)
+    wandb.init(project='fine-grained_segmentation', entity=args.wandb_entity)
 
     # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -282,6 +255,7 @@ if __name__ == '__main__':
     # Initialize Model
     model = SSNModel(feature_dim=args.f_dim, nspix=args.n_spix, training=True, n_iter=args.n_iter).to(device)
     mlp_model = MLP().to(device)
+
     # model = SSN_VGG(args.layer_number, args.n_spix, args.n_iter).to(device)
     print(f'Model: {model}')
 
@@ -293,14 +267,20 @@ if __name__ == '__main__':
     iterations = 0
     max_val_asa = 0
 
+
     # Train model
     while iterations < args.train_iter:
         for data in train_loader:
             iterations += 1
-            metric = update_params(data, model, optimizer, args.compactness, args.color_scale, args.pos_scale, device, mlp_model, batch_size=args.batchsize)
+            metric = update_params(data, model, optimizer, args.compactness, args.color_scale, args.pos_scale, device, mlp_model, batch_size=args.batchsize, iteration=iterations)
             meter.add(metric)
             state = meter.state(f'[{iterations}/{args.train_iter}]')
             print(state)
+            wandb.log(metric)
+            # wandb.watch(model, log="all", idx=0)
+            # wandb.watch(mlp_model, log="all", idx=1)
+            wandb.watch([model, mlp_model], log='all')
+
             if (iterations % args.test_interval) == 0:
                 asa = eval(model, test_loader, args.color_scale, args.pos_scale, device)
                 print(f'Validation ASA: {asa}')
@@ -314,49 +294,3 @@ if __name__ == '__main__':
         unique_id = str(int(time.time()))
         torch.save(model.state_dict(), os.path.join(args.out_dir, 'model_' + unique_id + '.pth'))
         torch.save(mlp_model.state_dict(), os.path.join(args.out_dir, 'mlp_' + unique_id + '.pth'))
-
-    # model = vgg16(weights=VGG16_Weights.IMAGENET1K_V1)
-    # model.to(device)
-    # input_size = (256, 256)
-    # val_transform = T.Compose([
-    #     T.Resize(input_size),
-    #     T.ToTensor(),
-    #     T.Normalize(mean=[0.485, 0.456, 0.406],
-    #                 std=[0.229, 0.224, 0.225]),
-    # ])
-    # img_path = os.path.join('/mnt/nfs-students/fine_grained_segmentation/Sooty_Albatross_0031_1066.jpg')
-    # img = Image.open(img_path)
-    # img = val_transform(img).unsqueeze(0)
-    # img = img.to(device)
-    #
-    # features = custom_forward(model, img)
-    #
-    # # Set Parameters
-    # nspix = 25
-    # pos_scale = 0.25
-    # enforce_connectivity = True
-    #
-    # # Inference
-    # model = SSNModel(nspix, training=True)
-    #
-    # for label, feature_map in features.items():
-    #     height = width = feature_map.shape[-1]
-    #     print(f'height: {height}, width: {width}')
-    #     image = Image.open('/mnt/nfs-students/fine_grained_segmentation/Sooty_Albatross_0031_1066.jpg')
-    #     image = image.resize((height, width))
-    #     image = np.array(image)
-    #     # plt.imsave(f'resized_{label}.png', image)
-    #     _, H, _ = model(feature_map)
-    #     labels = H.reshape(height, width).to("cpu").detach().numpy()
-    #
-    #     if enforce_connectivity:
-    #         segment_size = height * width / nspix
-    #         min_size = int(0.06 * segment_size)
-    #         max_size = int(3.0 * segment_size)
-    #         labels = _enforce_label_connectivity_cython(
-    #             labels[None], min_size, max_size)[0]
-    #
-    #     plt.imsave(f'vgg_results/result_{label}.png', mark_boundaries(image, labels))
-
-    # for key, value in features.items():
-    #     print(f'{key}: {value.shape}')

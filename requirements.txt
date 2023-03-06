@@ -2,3 +2,4 @@ torch==1.11.0
 torchvision
 ninja
 scikit-image
+wandb

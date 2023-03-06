@@ -115,5 +115,4 @@ class MLP(MessagePassing):
         concatenated = torch.cat([x_i, x_j], dim=1)
         y = self.mlp(concatenated)
         self.probs = y
-        # return y*x_j
         return y
